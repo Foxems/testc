@@ -7,16 +7,14 @@ local RECONNECT_DELAY = 7
 local PING_INTERVAL = 25
 
 local ws_client
-local instanceIdFromServer = nil
+local instanceIdFromServer = nil 
 local is_connected = false
 local last_ping_sent = 0
 local connection_attempt_active = false
 
--- Helper to try attaching an event handler using various common patterns
 local function _try_attach_event(client, event_config, callback)
     local s_access, prop, s_connect_access, connect_fn, s_call, err_call
 
-    -- Try PascalCaseEvent:Connect (e.g., client.OnMessage:Connect(cb))
     s_access, prop = pcall(function() return client[event_config.PascalEvent] end)
     if s_access and prop and type(prop) == "table" then
         s_connect_access, connect_fn = pcall(function() return prop.Connect end)
@@ -26,7 +24,6 @@ local function _try_attach_event(client, event_config, callback)
         end
     end
 
-    -- Try snake_case_event:connect (e.g., client.on_message:connect(cb))
     s_access, prop = pcall(function() return client[event_config.snake_event] end)
     if s_access and prop and type(prop) == "table" then
         s_connect_access, connect_fn = pcall(function() return prop.connect end)
@@ -36,14 +33,12 @@ local function _try_attach_event(client, event_config, callback)
         end
     end
 
-    -- Try EventEmitterStyle:on("event", cb) (e.g., client:on("message", cb))
     s_access, prop = pcall(function() return client.on end)
     if s_access and prop and type(prop) == "function" then
         s_call, err_call = pcall(function() client:on(event_config.emitter_event, callback) end)
         if s_call then return true, "client:on('" .. event_config.emitter_event .. "')" end
     end
     
-    -- Try DirectAssignment .onevent = cb (e.g., client.onmessage = cb)
     if event_config.direct_on_event then
         s_call, err_call = pcall(function() client[event_config.direct_on_event] = callback end)
         if s_call then 
@@ -52,7 +47,6 @@ local function _try_attach_event(client, event_config, callback)
         end
     end
 
-    -- Try DirectAssignment .on_event = cb (e.g., client.on_message = cb)
     if event_config.direct_on_underscore_event then
         s_call, err_call = pcall(function() client[event_config.direct_on_underscore_event] = callback end)
         if s_call then
@@ -63,50 +57,62 @@ local function _try_attach_event(client, event_config, callback)
     return false
 end
 
--- Helper to try sending a message using various common patterns
 local function _try_send_message(client, data_string)
     local success, err_msg, method_name
 
-    -- Try client:send(data)
     method_name = "client:send()"
     success, err_msg = pcall(function() client:send(data_string) end)
     if success then return true, method_name end
 
-    -- Try client.send(data)
     method_name = "client.send()"
     success, err_msg = pcall(function() client.send(data_string) end)
     if success then return true, method_name end
     
-    -- Try client:Send(data)
     method_name = "client:Send()"
     success, err_msg = pcall(function() client:Send(data_string) end)
     if success then return true, method_name end
 
-    -- Try client.Send(data)
     method_name = "client.Send()"
     success, err_msg = pcall(function() client.Send(data_string) end)
     if success then return true, method_name end
     
-    return false, err_msg -- Return last error message if all fail
+    return false, err_msg 
 end
 
 
 local function send_ws_message(data_table)
-    if not (ws_client and is_connected) then
-        return
+    if not (ws_client and (is_connected or data_table.type == "identity_report")) then
+        if not (data_table.type == "identity_report" and ws_client) then return end
     end
     
     local success_json, json_data = pcall(HttpService.JSONEncode, HttpService, data_table)
     if not success_json or not ws_client then
-        if not success_json then warn("JSONEncode failed in send_ws_message: " .. tostring(json_data)) end
+        if not success_json then warn("JSONEncode failed: " .. tostring(json_data)) end
         return
     end
 
     local sent, method_or_error = _try_send_message(ws_client, json_data)
     if not sent then
-        warn("All WebSocket send methods failed. Last error: " .. tostring(method_or_error) .. ". Client type: " .. type(ws_client))
-    -- else
-        -- print("Message sent via " .. method_or_error)
+        warn("All WebSocket send methods failed. Last error: " .. tostring(method_or_error))
+    end
+end
+
+local function send_identity_report()
+    if not Players.LocalPlayer then
+        warn("LocalPlayer not available for identity report.")
+        task.wait(1) 
+        if not Players.LocalPlayer then return end 
+    end
+    local userId = Players.LocalPlayer.UserId
+    local userName = Players.LocalPlayer.Name
+    if userId and userName then
+        send_ws_message({
+            type = "identity_report",
+            userId = tostring(userId),
+            userName = userName
+        })
+    else
+        warn("Could not send identity report: UserId or UserName missing.")
     end
 end
 
@@ -119,9 +125,21 @@ local function handle_server_message(message_string)
     end
 
     if data.type == "connected" then
-        instanceIdFromServer = data.instanceId
-        is_connected = true 
-        send_ws_message({ type = "status_update", status = "idle" })
+        instanceIdFromServer = data.instanceId 
+        is_connected = true
+        
+        if data.status then
+            if data.status == "active_cooldown" and data.cooldownUntil then
+                local serverNow = tonumber(data.serverTime) or tick() * 1000 
+                local clientServerTimeDiff = tick() * 1000 - serverNow
+                local cooldownEndTimeClient = tonumber(data.cooldownUntil) + clientServerTimeDiff
+                local timeLeft = math.max(0, math.floor((cooldownEndTimeClient - tick()*1000) / 1000))
+            end
+        end
+        if data.status == 'idle' or not data.status then
+            send_ws_message({ type = "status_update", status = "idle" })
+        end
+
     elseif data.type == "teleport" then
         local placeId = tonumber(data.placeId)
         local jobId = tostring(data.jobId)
@@ -138,6 +156,8 @@ local function handle_server_message(message_string)
         end
     elseif data.type == "ping" then
         send_ws_message({ type = "pong" })
+    elseif data.type == "error" and data.message == "Identity not established." then
+        send_identity_report()
     end
 end
 
@@ -165,6 +185,7 @@ local function connect_websocket()
     local function _handle_close_wrapper(code, reason)
         is_connected = false
         ws_client = nil
+        connection_attempt_active = false
         task.wait(RECONNECT_DELAY)
         connect_websocket()
     end
@@ -175,6 +196,7 @@ local function connect_websocket()
         end
         is_connected = false
         ws_client = nil
+        connection_attempt_active = false
         task.wait(RECONNECT_DELAY)
         connect_websocket()
     end
@@ -199,6 +221,7 @@ local function connect_websocket()
         if ws_client.OnError then ws_client.OnError:Connect(_handle_error_wrapper) end
         
         connection_attempt_active = false
+        send_identity_report() 
         
     elseif WebSocket and WebSocket.connect then 
         local success_connect, client_or_error = pcall(WebSocket.connect, WEBSOCKET_SERVER_URL)
@@ -211,33 +234,32 @@ local function connect_websocket()
             return
         end
         ws_client = client_or_error
-        connection_attempt_active = false
-
+        
         local message_event_config = {PascalEvent = "OnMessage", snake_event = "on_message", direct_on_event = "onmessage", direct_on_underscore_event = "on_message", emitter_event = "message"}
         local close_event_config = {PascalEvent = "OnClose", snake_event = "on_close", direct_on_event = "onclose", direct_on_underscore_event = "on_close", emitter_event = "close"}
         local error_event_config = {PascalEvent = "OnError", snake_event = "on_error", direct_on_event = "onerror", direct_on_underscore_event = "on_error", emitter_event = "error"}
 
         local attached_msg, msg_method = _try_attach_event(ws_client, message_event_config, _handle_message_wrapper)
-        if not attached_msg then warn("WebSocket: Could not attach any message handler.") else print("Attached message handler via " .. msg_method) end
+        if not attached_msg then warn("WebSocket: Could not attach message handler.") end
         
         local attached_close, close_method = _try_attach_event(ws_client, close_event_config, _handle_close_wrapper)
-        if not attached_close then warn("WebSocket: Could not attach any close handler.") else print("Attached close handler via " .. close_method) end
+        if not attached_close then warn("WebSocket: Could not attach close handler.") end
 
         local attached_error, error_method = _try_attach_event(ws_client, error_event_config, _handle_error_wrapper)
-        if not attached_error then warn("WebSocket: Could not attach any error handler.") else print("Attached error handler via " .. error_method) end
+        if not attached_error then warn("WebSocket: Could not attach error handler.") end
         
+        connection_attempt_active = false 
         if not (attached_msg and attached_close) then
-             warn("Critical WebSocket event handlers (message or close) could not be attached. Will attempt reconnection.")
+             warn("Critical WebSocket event handlers not attached. Reconnecting.")
              if ws_client.close then pcall(ws_client.close, ws_client) end
-             ws_client = nil
-             is_connected = false
-             task.wait(RECONNECT_DELAY)
-             connect_websocket()
+             ws_client = nil; is_connected = false 
+             task.wait(RECONNECT_DELAY); connect_websocket()
              return
         end
+        send_identity_report()
         
     else
-        warn("No WebSocket library (syn.websocket or WebSocket) found.")
+        warn("No WebSocket library found.")
         connection_attempt_active = false
         task.wait(RECONNECT_DELAY) 
         connect_websocket()
