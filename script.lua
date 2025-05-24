@@ -2,7 +2,7 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 
-local WEBSOCKET_SERVER_URL = "ws://192.168.0.225:8080" 
+local WEBSOCKET_SERVER_URL = "ws://192.168.1.105:8080" -- MAKE SURE THIS IS YOUR CORRECT HOST LAN IP
 
 local RECONNECT_DELAY = 7
 local PING_INTERVAL = 25
@@ -35,6 +35,7 @@ local function handle_server_message(message_string)
 
     if data.type == "connected" then
         instanceIdFromServer = data.instanceId
+        is_connected = true -- Set connected true when server confirms
         send_ws_message({ type = "status_update", status = "idle" })
     elseif data.type == "teleport" then
         local placeId = tonumber(data.placeId)
@@ -91,7 +92,7 @@ local function connect_websocket()
             connect_websocket()
         end)
         
-        is_connected = true 
+        is_connected = true -- For syn, connection is often implied if connect() succeeds
         connection_attempt_active = false
         
     elseif WebSocket and WebSocket.connect then 
@@ -104,38 +105,60 @@ local function connect_websocket()
             return
         end
         ws_client = client_or_error
+        connection_attempt_active = false -- If WebSocket.connect returned a client, this attempt is done.
+                                          -- is_connected will be set true by the server's "connected" message.
 
-        ws_client.on_open:connect(function()
-            is_connected = true
-            connection_attempt_active = false
-        end)
+        -- The problematic ws_client.on_open:connect(...) block is removed.
 
-        ws_client.on_message:connect(function(message)
-            handle_server_message(message)
-        end)
+        -- We assume on_message, on_close, on_error might still work with :connect for this executor.
+        -- If these also cause errors, their connection method needs to be investigated/changed too.
+        if ws_client.on_message and type(ws_client.on_message.connect) == "function" then
+            ws_client.on_message:connect(function(message)
+                handle_server_message(message)
+            end)
+        elseif ws_client.on and type(ws_client.on) == "function" then -- Try common alternative
+            ws_client:on("message", function(message) handle_server_message(message) end)
+        else
+            warn("WebSocket: Could not attach message handler.")
+        end
 
-        ws_client.on_close:connect(function(code, reason)
-            is_connected = false
-            ws_client = nil
-            connection_attempt_active = false
-            task.wait(RECONNECT_DELAY)
-            connect_websocket()
-        end)
+        if ws_client.on_close and type(ws_client.on_close.connect) == "function" then
+            ws_client.on_close:connect(function(code, reason)
+                is_connected = false
+                ws_client = nil
+                -- connection_attempt_active will be reset by the next call to connect_websocket
+                task.wait(RECONNECT_DELAY)
+                connect_websocket()
+            end)
+        elseif ws_client.on and type(ws_client.on) == "function" then -- Try common alternative
+            ws_client:on("close", function(code, reason) 
+                is_connected = false; ws_client = nil; task.wait(RECONNECT_DELAY); connect_websocket() 
+            end)
+        else
+            warn("WebSocket: Could not attach close handler.")
+        end
         
-        ws_client.on_error:connect(function(err)
-            if is_connected or connection_attempt_active then
-                 pcall(function() if ws_client and ws_client.close then ws_client:close() end end)
-            end
-            is_connected = false
-            ws_client = nil
-            connection_attempt_active = false
-            task.wait(RECONNECT_DELAY)
-            connect_websocket()
-        end)
-        -- connection_attempt_active will be set to false by on_open or on_error
+        if ws_client.on_error and type(ws_client.on_error.connect) == "function" then
+            ws_client.on_error:connect(function(err)
+                if is_connected then -- only try to close if it thought it was connected
+                     pcall(function() if ws_client and ws_client.close then ws_client:close() end end)
+                end
+                is_connected = false
+                ws_client = nil
+                task.wait(RECONNECT_DELAY)
+                connect_websocket()
+            end)
+        elseif ws_client.on and type(ws_client.on) == "function" then -- Try common alternative
+             ws_client:on("error", function(err)
+                if is_connected then pcall(function() if ws_client and ws_client.close then ws_client:close() end end) end
+                is_connected = false; ws_client = nil; task.wait(RECONNECT_DELAY); connect_websocket()
+            end)
+        else
+             warn("WebSocket: Could not attach error handler.")
+        end
     else
         connection_attempt_active = false
-        task.wait(RECONNECT_DELAY) -- Wait before retrying if no WebSocket library found
+        task.wait(RECONNECT_DELAY) 
         connect_websocket()
         return 
     end
