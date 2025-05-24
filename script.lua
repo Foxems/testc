@@ -2,7 +2,7 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 
-local WEBSOCKET_SERVER_URL = "ws://192.168.1.105:8080" -- MAKE SURE THIS IS YOUR CORRECT HOST LAN IP
+local WEBSOCKET_SERVER_URL = "ws://192.168.0.225:8080" -- MAKE SURE THIS IS YOUR CORRECT HOST LAN IP
 
 local RECONNECT_DELAY = 7
 local PING_INTERVAL = 25
