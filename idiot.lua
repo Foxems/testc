@@ -71,7 +71,7 @@ local function deleteSpecificPets()
 
     local function tryDeletePet(petId)
         if petId then
-            local deleteArgs = { "DeletePet", petId, 1, false }
+            local deleteArgs = { "DeletePet", petId, 500, false }
             pcall(function() RemoteEventPath:FireServer(unpack(deleteArgs)) end)
         end
     end
