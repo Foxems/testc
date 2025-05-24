@@ -2,8 +2,7 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
 
-local WEBSOCKET_SERVER_URL = "ws://192.168.0.225:8080" -- MAKE SURE THIS IS YOUR CORRECT HOST LAN IP
-
+local WEBSOCKET_SERVER_URL = "ws://192.168.0.225:8080" 
 local RECONNECT_DELAY = 7
 local PING_INTERVAL = 25
 
@@ -30,12 +29,13 @@ local function handle_server_message(message_string)
     local success, data = pcall(HttpService.JSONDecode, HttpService, message_string)
 
     if not success then
+        warn("Failed to decode JSON message: " .. message_string)
         return
     end
 
     if data.type == "connected" then
         instanceIdFromServer = data.instanceId
-        is_connected = true -- Set connected true when server confirms
+        is_connected = true 
         send_ws_message({ type = "status_update", status = "idle" })
     elseif data.type == "teleport" then
         local placeId = tonumber(data.placeId)
@@ -61,11 +61,39 @@ local function connect_websocket()
         return
     end
     connection_attempt_active = true
-    is_connected = false
+    is_connected = false 
     if ws_client and ws_client.close then
         pcall(ws_client.close, ws_client)
     end
     ws_client = nil
+
+    local function _handle_message_wrapper(message_data)
+        local message_content = message_data
+        if type(message_data) == "table" and message_data.data then
+            message_content = message_data.data
+        end
+        if type(message_content) == "string" then
+            handle_server_message(message_content)
+        end
+    end
+
+    local function _handle_close_wrapper(code, reason)
+        is_connected = false
+        ws_client = nil
+        task.wait(RECONNECT_DELAY)
+        connect_websocket()
+    end
+
+    local function _handle_error_wrapper(err)
+        if is_connected then 
+             pcall(function() if ws_client and ws_client.close then ws_client:close() end end)
+        end
+        is_connected = false
+        ws_client = nil
+        task.wait(RECONNECT_DELAY)
+        connect_websocket()
+    end
+
 
     if syn and syn.websocket and syn.websocket.connect then 
         local connect_success, new_client = pcall(function()
@@ -80,19 +108,9 @@ local function connect_websocket()
         end
         ws_client = new_client
 
-        ws_client.OnMessage:Connect(function(message)
-            handle_server_message(message)
-        end)
-
-        ws_client.OnClose:Connect(function(code, reason)
-            is_connected = false
-            ws_client = nil 
-            connection_attempt_active = false
-            task.wait(RECONNECT_DELAY)
-            connect_websocket()
-        end)
+        ws_client.OnMessage:Connect(_handle_message_wrapper)
+        ws_client.OnClose:Connect(_handle_close_wrapper)
         
-        is_connected = true -- For syn, connection is often implied if connect() succeeds
         connection_attempt_active = false
         
     elseif WebSocket and WebSocket.connect then 
@@ -105,59 +123,80 @@ local function connect_websocket()
             return
         end
         ws_client = client_or_error
-        connection_attempt_active = false -- If WebSocket.connect returned a client, this attempt is done.
-                                          -- is_connected will be set true by the server's "connected" message.
+        connection_attempt_active = false
 
-        -- The problematic ws_client.on_open:connect(...) block is removed.
-
-        -- We assume on_message, on_close, on_error might still work with :connect for this executor.
-        -- If these also cause errors, their connection method needs to be investigated/changed too.
-        if ws_client.on_message and type(ws_client.on_message.connect) == "function" then
-            ws_client.on_message:connect(function(message)
-                handle_server_message(message)
-            end)
-        elseif ws_client.on and type(ws_client.on) == "function" then -- Try common alternative
-            ws_client:on("message", function(message) handle_server_message(message) end)
-        else
-            warn("WebSocket: Could not attach message handler.")
+        local message_handler_attached = false
+        if not message_handler_attached and ws_client.OnMessage and type(ws_client.OnMessage.Connect) == "function" then
+            local s,e = pcall(function() ws_client.OnMessage:Connect(_handle_message_wrapper) end)
+            if s then message_handler_attached = true else warn("ws_client.OnMessage:Connect failed: " .. tostring(e)) end
         end
-
-        if ws_client.on_close and type(ws_client.on_close.connect) == "function" then
-            ws_client.on_close:connect(function(code, reason)
-                is_connected = false
-                ws_client = nil
-                -- connection_attempt_active will be reset by the next call to connect_websocket
-                task.wait(RECONNECT_DELAY)
-                connect_websocket()
-            end)
-        elseif ws_client.on and type(ws_client.on) == "function" then -- Try common alternative
-            ws_client:on("close", function(code, reason) 
-                is_connected = false; ws_client = nil; task.wait(RECONNECT_DELAY); connect_websocket() 
-            end)
-        else
-            warn("WebSocket: Could not attach close handler.")
+        if not message_handler_attached and ws_client.on_message and type(ws_client.on_message.connect) == "function" then
+            local s,e = pcall(function() ws_client.on_message:connect(_handle_message_wrapper) end)
+            if s then message_handler_attached = true else warn("ws_client.on_message:connect failed: " .. tostring(e)) end
         end
+        if not message_handler_attached and ws_client.on and type(ws_client.on) == "function" then 
+            local s,e = pcall(function() ws_client:on("message", _handle_message_wrapper) end)
+            if s then message_handler_attached = true else warn("ws_client:on('message', ...) failed: " .. tostring(e)) end
+        end
+        if not message_handler_attached then 
+            local s,e = pcall(function() ws_client.onmessage = _handle_message_wrapper end)
+            if s and type(ws_client.onmessage) == "function" then message_handler_attached = true else if not s then warn("Assigning ws_client.onmessage failed: " .. tostring(e)) end end
+        end
+        if not message_handler_attached then
+            local s,e = pcall(function() ws_client.on_message = _handle_message_wrapper end)
+            if s and type(ws_client.on_message) == "function" then message_handler_attached = true else if not s then warn("Assigning ws_client.on_message failed: " .. tostring(e)) end end
+        end
+        if not message_handler_attached then warn("WebSocket: Could not attach any message handler.") end
+
+        local close_handler_attached = false
+        if not close_handler_attached and ws_client.OnClose and type(ws_client.OnClose.Connect) == "function" then
+            local s,e = pcall(function() ws_client.OnClose:Connect(_handle_close_wrapper) end)
+            if s then close_handler_attached = true else warn("ws_client.OnClose:Connect failed: " .. tostring(e)) end
+        end
+        if not close_handler_attached and ws_client.on_close and type(ws_client.on_close.connect) == "function" then
+            local s,e = pcall(function() ws_client.on_close:connect(_handle_close_wrapper) end)
+            if s then close_handler_attached = true else warn("ws_client.on_close:connect failed: " .. tostring(e)) end
+        end
+        if not close_handler_attached and ws_client.on and type(ws_client.on) == "function" then
+            local s,e = pcall(function() ws_client:on("close", _handle_close_wrapper) end)
+            if s then close_handler_attached = true else warn("ws_client:on('close', ...) failed: " .. tostring(e)) end
+        end
+        if not close_handler_attached then
+            local s,e = pcall(function() ws_client.onclose = _handle_close_wrapper end)
+            if s and type(ws_client.onclose) == "function" then close_handler_attached = true else if not s then warn("Assigning ws_client.onclose failed: " .. tostring(e)) end end
+        end
+        if not close_handler_attached then
+            local s,e = pcall(function() ws_client.on_close = _handle_close_wrapper end)
+            if s and type(ws_client.on_close) == "function" then close_handler_attached = true else if not s then warn("Assigning ws_client.on_close failed: " .. tostring(e)) end end
+        end
+        if not close_handler_attached then warn("WebSocket: Could not attach any close handler.") end
         
-        if ws_client.on_error and type(ws_client.on_error.connect) == "function" then
-            ws_client.on_error:connect(function(err)
-                if is_connected then -- only try to close if it thought it was connected
-                     pcall(function() if ws_client and ws_client.close then ws_client:close() end end)
-                end
-                is_connected = false
-                ws_client = nil
-                task.wait(RECONNECT_DELAY)
-                connect_websocket()
-            end)
-        elseif ws_client.on and type(ws_client.on) == "function" then -- Try common alternative
-             ws_client:on("error", function(err)
-                if is_connected then pcall(function() if ws_client and ws_client.close then ws_client:close() end end) end
-                is_connected = false; ws_client = nil; task.wait(RECONNECT_DELAY); connect_websocket()
-            end)
-        else
-             warn("WebSocket: Could not attach error handler.")
+        local error_handler_attached = false
+        if not error_handler_attached and ws_client.OnError and type(ws_client.OnError.Connect) == "function" then
+             local s,e = pcall(function() ws_client.OnError:Connect(_handle_error_wrapper) end)
+             if s then error_handler_attached = true else warn("ws_client.OnError:Connect failed: " .. tostring(e)) end
         end
+        if not error_handler_attached and ws_client.on_error and type(ws_client.on_error.connect) == "function" then
+             local s,e = pcall(function() ws_client.on_error:connect(_handle_error_wrapper) end)
+             if s then error_handler_attached = true else warn("ws_client.on_error:connect failed: " .. tostring(e)) end
+        end
+        if not error_handler_attached and ws_client.on and type(ws_client.on) == "function" then
+             local s,e = pcall(function() ws_client:on("error", _handle_error_wrapper) end)
+             if s then error_handler_attached = true else warn("ws_client:on('error', ...) failed: " .. tostring(e)) end
+        end
+        if not error_handler_attached then
+            local s,e = pcall(function() ws_client.onerror = _handle_error_wrapper end)
+            if s and type(ws_client.onerror) == "function" then error_handler_attached = true else if not s then warn("Assigning ws_client.onerror failed: " .. tostring(e)) end end
+        end
+        if not error_handler_attached then
+            local s,e = pcall(function() ws_client.on_error = _handle_error_wrapper end)
+            if s and type(ws_client.on_error) == "function" then error_handler_attached = true else if not s then warn("Assigning ws_client.on_error failed: " .. tostring(e)) end end
+        end
+        if not error_handler_attached then warn("WebSocket: Could not attach any error handler.") end
+        
     else
         connection_attempt_active = false
+        warn("No WebSocket library (syn.websocket or WebSocket) found.")
         task.wait(RECONNECT_DELAY) 
         connect_websocket()
         return 
