@@ -128,16 +128,19 @@ local function handle_server_message(message_string)
         instanceIdFromServer = data.instanceId 
         is_connected = true
         
-        if data.status then
-            if data.status == "active_cooldown" and data.cooldownUntil then
-                local serverNow = tonumber(data.serverTime) or tick() * 1000 
-                local clientServerTimeDiff = tick() * 1000 - serverNow
-                local cooldownEndTimeClient = tonumber(data.cooldownUntil) + clientServerTimeDiff
-                local timeLeft = math.max(0, math.floor((cooldownEndTimeClient - tick()*1000) / 1000))
-            end
-        end
-        if data.status == 'idle' or not data.status then
+        local current_server_status = data.status
+        
+        if current_server_status == "active_cooldown" and data.cooldownUntil then
+            -- Cooldown is handled server-side, client just acknowledges.
+        elseif current_server_status == 'idle' then
             send_ws_message({ type = "status_update", status = "idle" })
+        elseif current_server_status == 'joining_pending_confirmation' then
+            -- Server is waiting for us to confirm the join after teleporting.
+            -- The Luau script will send 'joined_game_confirmed' or 'teleport_failed' after the attempt.
+        else
+            if not current_server_status then 
+                send_ws_message({ type = "status_update", status = "idle" })
+            end
         end
 
     elseif data.type == "teleport" then
@@ -147,8 +150,10 @@ local function handle_server_message(message_string)
             send_ws_message({ type = "status_update", status = "joining_game", placeId = placeId, jobId = jobId })
             
             local tp_success, tp_error = pcall(TeleportService.TeleportToPlaceInstance, TeleportService, placeId, jobId, Players.LocalPlayer)
+            
+            task.wait(5) -- Wait regardless of immediate pcall success to allow game to load
+
             if tp_success then
-                task.wait(5) 
                 send_ws_message({ type = "status_update", status = "joined_game_confirmed", placeId = placeId, jobId = jobId })
             else
                 send_ws_message({ type = "status_update", status = "teleport_failed", placeId = placeId, jobId = jobId, error = tostring(tp_error) })
