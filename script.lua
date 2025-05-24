@@ -128,18 +128,17 @@ local function handle_server_message(message_string)
         instanceIdFromServer = data.instanceId 
         is_connected = true
         
-        local current_server_status = data.status
+        local server_tells_us_status = data.status
         
-        if current_server_status == "active_cooldown" and data.cooldownUntil then
-            -- Cooldown is handled server-side, client just acknowledges.
-        elseif current_server_status == 'idle' then
+        if server_tells_us_status == 'idle' then
             send_ws_message({ type = "status_update", status = "idle" })
-        elseif current_server_status == 'joining_pending_confirmation' then
-            -- Server is waiting for us to confirm the join after teleporting.
-            -- The Luau script will send 'joined_game_confirmed' or 'teleport_failed' after the attempt.
+        elseif server_tells_us_status == "active_cooldown" then
+            -- Cooldown is handled server-side
+        elseif server_tells_us_status == 'joining_pending_confirmation' then
+            -- Server is waiting for this client to confirm its join
         else
-            if not current_server_status then 
-                send_ws_message({ type = "status_update", status = "idle" })
+            if not server_tells_us_status then
+                 send_ws_message({ type = "status_update", status = "idle" })
             end
         end
 
@@ -151,7 +150,7 @@ local function handle_server_message(message_string)
             
             local tp_success, tp_error = pcall(TeleportService.TeleportToPlaceInstance, TeleportService, placeId, jobId, Players.LocalPlayer)
             
-            task.wait(5) -- Wait regardless of immediate pcall success to allow game to load
+            task.wait(5) 
 
             if tp_success then
                 send_ws_message({ type = "status_update", status = "joined_game_confirmed", placeId = placeId, jobId = jobId })
