@@ -1,6 +1,8 @@
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService") -- Added
+local ReplicatedStorage = game:GetService("ReplicatedStorage") -- Added for potential fallback
 
 local WEBSOCKET_SERVER_URL = "ws://192.168.0.225:8080" 
 local RECONNECT_DELAY = 7
@@ -12,6 +14,7 @@ local is_connected = false
 local last_ping_sent = 0
 local connection_attempt_active = false
 
+-- ... (Keep _try_attach_event and _try_send_message as they are) ...
 local function _try_attach_event(client, event_config, callback)
     local s_access, prop, s_connect_access, connect_fn, s_call, err_call
     s_access, prop = pcall(function() return client[event_config.PascalEvent] end)
@@ -69,6 +72,7 @@ local function _try_send_message(client, data_string)
     return false, err_msg 
 end
 
+
 local function send_ws_message(data_table)
     if not (ws_client and (is_connected or data_table.type == "identity_report")) then
         if not (data_table.type == "identity_report" and ws_client) then return end
@@ -125,15 +129,103 @@ local function handle_server_message(message_string)
         if placeId and jobId and Players.LocalPlayer then
             send_ws_message({ type = "status_update", status = "joining_game", placeId = placeId, jobId = jobId })
             TeleportService:TeleportToPlaceInstance(placeId, jobId, Players.LocalPlayer)
-            -- No further confirmation sent from client after this point for this teleport.
-            -- Server will infer success based on disconnect and reconnect.
         end
     elseif data.type == "ping" then
         send_ws_message({ type = "pong" })
     elseif data.type == "error" and data.message == "Identity not established." then
         send_identity_report()
+    elseif data.type == "send_chat_to_roblox" and data.message then -- New: Handle chat from GUI
+        local messageToSend = tostring(data.message)
+        if TextChatService then
+            local GeneralChannel = nil
+            for _, channel in ipairs(TextChatService:GetChildren()) do
+                if channel:IsA("TextChannel") and (string.lower(channel.Name) == "rbxsystem" or string.lower(channel.Name) == "all" or string.find(string.lower(channel.Name), "general") ) then
+                    GeneralChannel = channel
+                    break
+                end
+            end
+            if not GeneralChannel and TextChatService:FindFirstChildOfClass("TextChannel") then
+                GeneralChannel = TextChatService:FindFirstChildOfClass("TextChannel")
+            end
+
+            if GeneralChannel then
+                local s, e = pcall(function() GeneralChannel:SendAsync(messageToSend) end)
+                if not s then warn("Failed to send chat via TextChatService: " .. tostring(e)) end
+            else
+                warn("Could not find a suitable TextChannel to send chat message.")
+            end
+        else
+            -- Fallback for older games (might not work consistently or at all)
+            local ChatService = game:GetService("Chat")
+            if ChatService then
+                pcall(function() ChatService:Chat(Players.LocalPlayer.Character.Head, messageToSend, Enum.ChatColor.Blue) end)
+            else
+                 warn("TextChatService not available and Chat service fallback failed for sending message.")
+            end
+        end
     end
 end
+
+local function setup_chat_listeners()
+    if TextChatService then
+        TextChatService.MessageReceived:Connect(function(textChatMessage)
+            if not is_connected then return end -- Only send if connected
+            local authorUserId = "System"
+            local authorDisplayName = "System"
+            local messageText = textChatMessage.Text
+            local timestamp = textChatMessage.Timestamp:ToUnixTimestamp()
+
+            if textChatMessage.TextSource then -- Message from a player
+                authorUserId = tostring(textChatMessage.TextSource.UserId)
+                authorDisplayName = textChatMessage.TextSource.DisplayName
+            elseif textChatMessage.Metadata then -- Potentially system messages with more info
+                 -- Try to parse metadata if it's useful, example:
+                 -- local s, metadataJson = pcall(HttpService.JSONDecode, HttpService, textChatMessage.Metadata)
+                 -- if s and metadataJson and metadataJson.OriginalSenderDisplayName then
+                 --    authorDisplayName = "System (" .. metadataJson.OriginalSenderDisplayName .. ")"
+                 -- end
+            end
+            
+            send_ws_message({
+                type = "chat_message_from_client",
+                authorUserId = authorUserId,
+                authorDisplayName = authorDisplayName,
+                message = messageText,
+                timestamp = timestamp
+            })
+        end)
+    else
+        -- Fallback for older chat systems
+        local function handle_legacy_chat(player, message)
+            if not is_connected then return end
+            send_ws_message({
+                type = "chat_message_from_client",
+                authorUserId = tostring(player.UserId),
+                authorDisplayName = player.DisplayName,
+                message = message,
+                timestamp = os.time() 
+            })
+        end
+
+        Players.PlayerAdded:Connect(function(player)
+            player.Chatted:Connect(function(message) handle_legacy_chat(player, message) end)
+        end)
+        for _, player in ipairs(Players:GetPlayers()) do
+            player.Chatted:Connect(function(message) handle_legacy_chat(player, message) end)
+        end
+        if Players.LocalPlayer then -- Ensure LocalPlayer's chat is also captured if script loads late
+             local existingConnection
+             existingConnection = Players.LocalPlayer.Chatted:Connect(function(message)
+                if not Players.LocalPlayer then -- Check if player left
+                    if existingConnection then existingConnection:Disconnect() end
+                    return
+                end
+                handle_legacy_chat(Players.LocalPlayer, message)
+             end)
+        end
+    end
+end
+
 
 local function connect_websocket()
     if connection_attempt_active then
@@ -192,6 +284,7 @@ local function connect_websocket()
         if ws_client.OnError then ws_client.OnError:Connect(_handle_error_wrapper) end
         connection_attempt_active = false
         send_identity_report() 
+        setup_chat_listeners() -- Setup chat listeners after successful connection
     elseif WebSocket and WebSocket.connect then 
         local success_connect, client_or_error = pcall(WebSocket.connect, WEBSOCKET_SERVER_URL)
         if not success_connect or not client_or_error then
@@ -220,6 +313,7 @@ local function connect_websocket()
              return
         end
         send_identity_report()
+        setup_chat_listeners() -- Setup chat listeners after successful connection
     else
         warn("No WebSocket library found.")
         connection_attempt_active = false
