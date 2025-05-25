@@ -14,7 +14,7 @@ local is_connected = false
 local last_ping_sent = 0
 local connection_attempt_active = false
 
--- Keep _try_attach_event and _try_send_message as they are from your original script
+-- Keep _try_attach_event and _try_send_message as they are
 local function _try_attach_event(client, event_config, callback)
     local s_access, prop, s_connect_access, connect_fn, s_call, err_call
     s_access, prop = pcall(function() return client[event_config.PascalEvent] end)
@@ -249,7 +249,7 @@ local function setup_chat_listeners()
     if TextChatService then
         warn("[SNIPER_LUA_CHAT_LISTEN] Setting up TextChatService.MessageReceived listener.")
         TextChatService.MessageReceived:Connect(function(textChatMessage)
-            warn("[SNIPER_LUA_CHAT_LISTEN] TextChatService.MessageReceived Fired. Text: ", textChatMessage.Text, " Source: ", textChatMessage.TextSource and textChatMessage.TextSource.Name or "System")
+            warn("[SNIPER_LUA_CHAT_LISTEN] TextChatService.MessageReceived Fired. Text: ", textChatMessage.Text, " Source available: ", tostring(textChatMessage.TextSource ~= nil))
             if not is_connected then
                 warn("[SNIPER_LUA_CHAT_LISTEN] MessageReceived, but not connected to WS. Aborting send.")
                 return
@@ -278,18 +278,29 @@ local function setup_chat_listeners()
 
             if textChatMessage.TextSource then 
                 authorUserId = tostring(textChatMessage.TextSource.UserId)
-                -- Corrected way to get DisplayName:
+                
                 local sourcePlayer = Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
                 if sourcePlayer then
-                    authorDisplayName = sourcePlayer.DisplayName -- This is the primary way
-                    if not authorDisplayName or authorDisplayName == "" then -- Fallback to Name if DisplayName is empty
+                    authorDisplayName = sourcePlayer.DisplayName 
+                    if not authorDisplayName or authorDisplayName == "" then 
                         authorDisplayName = sourcePlayer.Name
-                        warn("[SNIPER_LUA_CHAT_LISTEN] Used sourcePlayer.Name as DisplayName for UserId: " .. authorUserId)
+                        warn(("[SNIPER_LUA_CHAT_LISTEN] Used sourcePlayer.Name ('%s') as DisplayName for UserId: %s"):format(tostring(authorDisplayName), tostring(authorUserId)))
+                    else
+                        warn(("[SNIPER_LUA_CHAT_LISTEN] Got DisplayName '%s' from sourcePlayer for UserId: %s"):format(tostring(authorDisplayName), tostring(authorUserId)))
                     end
                 else
-                    authorDisplayName = textChatMessage.TextSource.Name -- Fallback if player object not found (unlikely but safe)
-                    warn("[SNIPER_LUA_CHAT_LISTEN] Could not find Player object for UserId: " .. authorUserId .. ". Using TextSource.Name.")
+                    -- Fallback: Try to get Name directly from TextSource if player not found
+                    -- This is the part that was causing issues if TextSource doesn't have .Name
+                    local tsName = "UnknownPlayer" -- Default if all fails
+                    local success_getName, nameValue = pcall(function() return textChatMessage.TextSource.Name end)
+                    if success_getName and nameValue then
+                        tsName = nameValue
+                    end
+                    authorDisplayName = tsName
+                    warn(("[SNIPER_LUA_CHAT_LISTEN] Could not find Player object for UserId: %s. Attempted TextSource.Name, got: '%s'."):format(tostring(authorUserId), tostring(authorDisplayName)))
                 end
+            else
+                 warn("[SNIPER_LUA_CHAT_LISTEN] TextSource is nil. Message likely from System.")
             end
             
             local payload = {
