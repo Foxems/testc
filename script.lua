@@ -278,9 +278,17 @@ local function setup_chat_listeners()
 
             if textChatMessage.TextSource then 
                 authorUserId = tostring(textChatMessage.TextSource.UserId)
-                authorDisplayName = textChatMessage.TextSource.Name 
-                if textChatMessage.TextSource.DisplayName and textChatMessage.TextSource.DisplayName ~= "" then
-                    authorDisplayName = textChatMessage.TextSource.DisplayName
+                -- Corrected way to get DisplayName:
+                local sourcePlayer = Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
+                if sourcePlayer then
+                    authorDisplayName = sourcePlayer.DisplayName -- This is the primary way
+                    if not authorDisplayName or authorDisplayName == "" then -- Fallback to Name if DisplayName is empty
+                        authorDisplayName = sourcePlayer.Name
+                        warn("[SNIPER_LUA_CHAT_LISTEN] Used sourcePlayer.Name as DisplayName for UserId: " .. authorUserId)
+                    end
+                else
+                    authorDisplayName = textChatMessage.TextSource.Name -- Fallback if player object not found (unlikely but safe)
+                    warn("[SNIPER_LUA_CHAT_LISTEN] Could not find Player object for UserId: " .. authorUserId .. ". Using TextSource.Name.")
                 end
             end
             
