@@ -160,7 +160,6 @@ local function handle_server_message(message_string)
             warn("[SNIPER_LUA_CHAT] TextChatService found. Attempting to send: ", messageToSend)
             local targetChannel = nil
             
-            -- Try ChatInputBarConfiguration first
             if TextChatService:FindFirstChild("ChatInputBarConfiguration") then
                 local inputBarConfig = TextChatService.ChatInputBarConfiguration
                 targetChannel = inputBarConfig:GetAttribute("TargetTextChannel") or inputBarConfig.TargetTextChannel
@@ -182,7 +181,6 @@ local function handle_server_message(message_string)
                  warn("[SNIPER_LUA_CHAT] ChatInputBarConfiguration not found in TextChatService.")
             end
 
-            -- Fallback to general channel search if not sent
             if not messageSent then
                 warn("[SNIPER_LUA_CHAT] Falling back to general channel search for TextChatService.")
                 local channels = TextChatService:GetChildren()
@@ -196,7 +194,7 @@ local function handle_server_message(message_string)
                     end
                 end
                 
-                if not preferredChannel then -- If no preferred, take the first available TextChannel
+                if not preferredChannel then 
                     for _, channel in ipairs(channels) do
                         if channel:IsA("TextChannel") then
                             preferredChannel = channel
@@ -223,7 +221,6 @@ local function handle_server_message(message_string)
             end
         end
 
-        -- Fallback to legacy chat if TextChatService failed or not available
         if not messageSent then
             warn("[SNIPER_LUA_CHAT] TextChatService send failed or not available. Attempting legacy Chat service.")
             local ChatService = game:GetService("Chat")
@@ -240,7 +237,7 @@ local function handle_server_message(message_string)
                 end
             else
                 warn("[SNIPER_LUA_CHAT] Legacy ChatService not usable (missing service, player, character, or head).")
-                if not messageSent then -- Only send this if no method worked
+                if not messageSent then 
                      send_ws_message({type="feedback", status="error", message="Lua: All chat send methods failed."})
                 end
             end
@@ -259,13 +256,29 @@ local function setup_chat_listeners()
             end
             
             local authorUserId = "System"
-            local authorDisplayName = "System" -- Default for system messages
+            local authorDisplayName = "System" 
             local messageText = textChatMessage.Text
-            local timestamp = textChatMessage.Timestamp:ToUnixTimestamp()
+            
+            local timestamp
+            if textChatMessage.Timestamp and typeof(textChatMessage.Timestamp) == "DateTime" then
+                if textChatMessage.Timestamp.UnixTimestampMillis then
+                    timestamp = math.floor(textChatMessage.Timestamp.UnixTimestampMillis / 1000)
+                    warn("[SNIPER_LUA_CHAT_LISTEN] Got UnixTimestampMillis: ", textChatMessage.Timestamp.UnixTimestampMillis, " -> Seconds: ", timestamp)
+                elseif textChatMessage.Timestamp.UnixTimestamp then
+                    timestamp = textChatMessage.Timestamp.UnixTimestamp
+                    warn("[SNIPER_LUA_CHAT_LISTEN] Got UnixTimestamp (seconds): ", timestamp)
+                else
+                    warn("[SNIPER_LUA_CHAT_LISTEN] DateTime object present, but no UnixTimestampMillis or UnixTimestamp property found. Using os.time().")
+                    timestamp = os.time() 
+                end
+            else
+                warn("[SNIPER_LUA_CHAT_LISTEN] textChatMessage.Timestamp is not a DateTime object or is nil. Using os.time(). Type was: ", typeof(textChatMessage.Timestamp))
+                timestamp = os.time() 
+            end
 
-            if textChatMessage.TextSource then -- Message from a player
+            if textChatMessage.TextSource then 
                 authorUserId = tostring(textChatMessage.TextSource.UserId)
-                authorDisplayName = textChatMessage.TextSource.Name -- Using Name as DisplayName might be more common from TextSource
+                authorDisplayName = textChatMessage.TextSource.Name 
                 if textChatMessage.TextSource.DisplayName and textChatMessage.TextSource.DisplayName ~= "" then
                     authorDisplayName = textChatMessage.TextSource.DisplayName
                 end
@@ -292,7 +305,7 @@ local function setup_chat_listeners()
             local payload = {
                 type = "chat_message_from_client",
                 authorUserId = tostring(player.UserId),
-                authorDisplayName = player.Name, -- Legacy often just uses Name
+                authorDisplayName = player.Name, 
                 message = message,
                 timestamp = os.time()
             }
@@ -435,7 +448,6 @@ local function connect_websocket()
     else
         warn("[SNIPER_LUA_WS] No WebSocket library (syn or generic WebSocket) found. Cannot connect.")
         connection_attempt_active = false
-        -- No point in trying to reconnect if no library
         return
     end
 end
@@ -446,10 +458,9 @@ connect_websocket()
 spawn(function()
     while task.wait(PING_INTERVAL) do
         if ws_client and is_connected and tick() - last_ping_sent > PING_INTERVAL - 2 then
-            -- warn("[SNIPER_LUA_PING] Sending ping to server.")
             send_ws_message({type = "ping_from_client"})
             last_ping_sent = tick()
-        elseif not is_connected and not connection_attempt_active and (syn and syn.websocket or WebSocket) then -- Only retry if a lib was found
+        elseif not is_connected and not connection_attempt_active and (syn and syn.websocket or WebSocket) then 
              warn("[SNIPER_LUA_PING_LOOP] Not connected and no active attempt. Re-initiating connection.")
              connect_websocket()
         end
